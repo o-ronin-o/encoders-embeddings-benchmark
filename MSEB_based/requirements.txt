@@ -1,0 +1,47 @@
+# Heart Sound Benchmark — requirements
+# Install order matters: MSEB first, then model-specific deps.
+
+# ── MSEB framework ────────────────────────────────────────────────────────────
+# Must be installed from GitHub (no stable PyPI release yet)
+mseb @ git+https://github.com/google-research/mseb
+
+# ── Core scientific stack ─────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=1.5
+scikit-learn>=1.3        # LogisticRegression, NearestCentroid, roc_auc_score
+scipy>=1.11              # used internally by scikit-learn
+
+# ── Audio I/O and processing ──────────────────────────────────────────────────
+soundfile>=0.12          # fast WAV/FLAC/OGG reader (primary audio loader)
+librosa>=0.10            # resampling, fallback audio loader, mel utilities
+audioread>=3.0           # librosa backend for MP3
+
+# ── Deep learning framework ───────────────────────────────────────────────────
+# Install the CUDA variant matching your GPU driver; this is the CPU fallback.
+# For GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1
+
+# ── Whisper (audio encoder backbone) ─────────────────────────────────────────
+openai-whisper>=20231106  # provides whisper.load_model, whisper.log_mel_spectrogram
+
+# ── HuggingFace (CLAP encoder) ────────────────────────────────────────────────
+transformers>=4.36        # ClapModel, ClapProcessor
+huggingface_hub>=0.20     # model download management
+
+# ── TS2Vec ────────────────────────────────────────────────────────────────────
+# Install the original repo if ts2vec is not on PyPI in your environment:
+#   pip install git+https://github.com/zhihanyue/ts2vec
+# Uncomment the line below if the PyPI package exists in your pip registry:
+# ts2vec>=0.1
+
+# ── Benchmark output formatting ───────────────────────────────────────────────
+rich>=13.0               # coloured console tables (graceful fallback if missing)
+
+# ── MSEB optional dependencies (for retrieval / ScaNN index building) ─────────
+# Only needed if you add retrieval tasks later.  Not required for classification.
+# scann>=1.3
+# apache-beam>=2.50
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+# absl-py is pulled in by MSEB automatically.
+# jaxtyping is pulled in by MSEB automatically.
