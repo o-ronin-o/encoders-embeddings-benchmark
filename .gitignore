@@ -1,0 +1,37 @@
+# Data directories
+data/
+data/raw/
+data/processed/
+embeddings/
+models/
+
+# Specific data file patterns
+*.npy
+*.npz
+*.csv
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.onnx
+
+# Large files
+*.wav
+*.mp3
+*.flac
+*.zip
+*.tar
+*.gz
+*.7z
+
+# Exclude specific directories with pattern
+**/data/**
+**/embeddings/**
+**/models/**
+
+# But keep empty directory structure (optional)
+!data/.gitkeep
+!embeddings/.gitkeep
+!models/.gitkeep
