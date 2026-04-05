@@ -1,0 +1,28 @@
+# Heart Sound Benchmark — requirements
+# Install order matters: MSEB first, then model-specific deps.
+
+
+
+# ── Core scientific stack ─────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=1.5
+scikit-learn>=1.3        # LogisticRegression, NearestCentroid, roc_auc_score
+scipy>=1.11              # used internally by scikit-learn
+
+# ── Audio I/O and processing ──────────────────────────────────────────────────
+soundfile         # fast WAV/FLAC/OGG reader (primary audio loader)
+librosa           # resampling, fallback audio loader, mel utilities
+audioread         # librosa backend for MP3
+
+
+torch>=2.1
+
+# ── Whisper (audio encoder backbone) ─────────────────────────────────────────
+openai-whisper>=20231106  # provides whisper.load_model, whisper.log_mel_spectrogram
+
+transformers>=4.36        
+huggingface_hub>=0.20     
+
+ts2vec
+
+mlflow

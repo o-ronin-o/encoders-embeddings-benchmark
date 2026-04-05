@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import librosa
 import scipy.signal as signal
@@ -7,29 +8,116 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+
+
 # ====================================================
 # CONFIGURATION FOR PHYSIONET 2016 DATASET
 # ====================================================
 
 RAW_DATA = "../data/raw/"               # Directory with Physionet data (with subdirectories)
-PROCESSED_DATA = "../data/processed/"   # Where we save preprocessed windows
 
-os.makedirs(PROCESSED_DATA, exist_ok=True)
+# ====================================================
+# SAMPLING RATE SELECTION MENU
+# ====================================================
 
-# Dataset-specific parameters
-ORIGINAL_SR = 2000                   # All files are resampled to 2000Hz
-TARGET_SR = 1000                     # Downsample to 1kHz for processing
-WIN_SIZE_SECONDS = 2                 # 2-second windows
-WIN_SIZE = WIN_SIZE_SECONDS * TARGET_SR  # 2000 samples at 1kHz
-HOP_SIZE = WIN_SIZE // 2             # 50% overlap (1000 samples)
+def get_sampling_rate_choice():
+    """
+    Interactive menu to choose sampling rate.
+    Returns: (target_sr, folder_name)
+    """
+    print("\n" + "="*60)
+    print("SAMPLING RATE SELECTION")
+    print("="*60)
+    print("\nChoose sampling rate for preprocessing:")
+    print("  1. 1000 Hz (1 kHz) - Recommended for heart sounds")
+    print("  2. 2000 Hz (2 kHz) - Original sampling rate")
+    print("  3. 4000 Hz (4 kHz) - Higher resolution")
+    print("  4. 8000 Hz (8 kHz) - For compatibility with some models")
+    print("  5. 16000 Hz (16 kHz) - For wav2vec/Whisper compatibility")
+    print("  6. Custom (enter your own)")
+    
+    choice = input("\nEnter your choice (1-6): ").strip()
+    
+    sampling_rates = {
+        '1': 1000,
+        '2': 2000,
+        '3': 4000,
+        '4': 8000,
+        '5': 16000
+    }
+    
+    if choice in sampling_rates:
+        target_sr = sampling_rates[choice]
+        folder_name = f"processed_{target_sr}hz"
+    elif choice == '6':
+        target_sr = int(input("Enter custom sampling rate (Hz): ").strip())
+        folder_name = f"processed_{target_sr}hz"
+    else:
+        print("Invalid choice. Using default 1000 Hz.")
+        target_sr = 1000
+        folder_name = "processed_1000hz"
+    
+    # Window size: 2 seconds at chosen sampling rate
+    win_size_seconds = 2
+    win_size = win_size_seconds * target_sr
+    hop_size = win_size // 2  # 50% overlap
+    
+    print(f"\n✅ Selected configuration:")
+    print(f"   Sampling rate: {target_sr} Hz")
+    print(f"   Window size: {win_size_seconds} seconds ({win_size} samples)")
+    print(f"   Hop size: {hop_size} samples (50% overlap)")
+    print(f"   Output folder: {folder_name}")
+    
+    return target_sr, win_size, hop_size, folder_name
 
-# Filter parameters for heart sounds
-LOWCUT = 25                          # Hz - removes breathing noise
-HIGHCUT = 400                        # Hz - heart sound frequencies
+# ====================================================
+# CREATE OUTPUT DIRECTORY
+# ====================================================
 
-# Quality control thresholds
-MIN_WINDOW_LENGTH = 1.0 * TARGET_SR  # Minimum 1-second window to keep
-
+def create_output_directory(base_processed_dir, folder_name):
+    """
+    Create a unique output directory for this sampling rate.
+    If directory exists, ask user what to do.
+    """
+    output_dir = os.path.join(base_processed_dir, folder_name)
+    
+    if os.path.exists(output_dir):
+        print(f"\n⚠️  Directory already exists: {output_dir}")
+        print("Options:")
+        print("  1. Overwrite (delete existing files)")
+        print("  2. Append (add to existing, may cause duplicates)")
+        print("  3. Create new version (add _v2, _v3, etc.)")
+        print("  4. Cancel")
+        
+        choice = input("\nEnter choice (1-4): ").strip()
+        
+        if choice == '1':
+            import shutil
+            shutil.rmtree(output_dir)
+            os.makedirs(output_dir)
+            print(f"✅ Existing directory removed and recreated.")
+        elif choice == '2':
+            print(f"✅ Will append to existing directory.")
+        elif choice == '3':
+            version = 2
+            while True:
+                new_folder = f"{folder_name}_v{version}"
+                new_output_dir = os.path.join(base_processed_dir, new_folder)
+                if not os.path.exists(new_output_dir):
+                    output_dir = new_output_dir
+                    folder_name = new_folder
+                    os.makedirs(output_dir)
+                    print(f"✅ Created new directory: {folder_name}")
+                    break
+                version += 1
+        else:
+            print("❌ Cancelled.")
+            return None, None
+    else:
+        os.makedirs(output_dir)
+        print(f"✅ Created directory: {output_dir}")
+    
+    return output_dir, folder_name
 
 # ====================================================
 # 1. LOAD LABELS FROM REFERENCE.CSV FILES
@@ -163,15 +251,16 @@ def load_labels_from_csv(raw_data_dir):
 
 
 # ====================================================
-# 2. AUDIO PROCESSING FUNCTIONS
+# 2. AUDIO PROCESSING FUNCTIONS (MODIFIED)
 # ====================================================
-def bandpass_filter(x, sr=TARGET_SR):
+def bandpass_filter(x, sr, lowcut=25, highcut=400):
     """
     Bandpass filter optimized for heart sounds (25-400Hz).
+    Now accepts sampling rate as parameter.
     """
     nyquist = sr / 2
-    low = LOWCUT / nyquist
-    high = HIGHCUT / nyquist
+    low = lowcut / nyquist
+    high = highcut / nyquist
     
     # 3rd order Butterworth filter
     b, a = signal.butter(3, [low, high], btype='band')
@@ -193,7 +282,7 @@ def normalize_robust(x):
         return (x - median) / (mad + 1e-8)
 
 
-def slice_windows(x, label, win_size=WIN_SIZE, hop_size=HOP_SIZE):
+def slice_windows(x, label, win_size, hop_size):
     """
     Slice audio into windows.
     Returns: (windows_array, labels_array)
@@ -217,15 +306,17 @@ def slice_windows(x, label, win_size=WIN_SIZE, hop_size=HOP_SIZE):
 
 
 # ====================================================
-# 3. MAIN PREPROCESSING FUNCTION
+# 3. MAIN PREPROCESSING FUNCTION (MODIFIED)
 # ====================================================
-def preprocess_dataset():
+def preprocess_dataset(output_dir, target_sr, win_size, hop_size, folder_name):
     """
     Main preprocessing pipeline using REFERENCE.csv files for labels.
+    Now accepts output directory and sampling parameters.
     """
     print("=" * 60)
     print("PhysioNet 2016 Heart Sound Preprocessing")
-    print("Using REFERENCE.csv files for labels")
+    print(f"Target Sampling Rate: {target_sr} Hz")
+    print(f"Output Directory: {folder_name}")
     print("=" * 60)
     
     # Step 1: Load labels from REFERENCE.csv files
@@ -247,7 +338,10 @@ def preprocess_dataset():
         'total_windows': 0,
         'normal_windows': 0,
         'abnormal_windows': 0,
-        'unknown_label_windows': 0
+        'unknown_label_windows': 0,
+        'target_sr': target_sr,
+        'win_size': win_size,
+        'hop_size': hop_size
     }
     
     # Get all .wav files
@@ -285,14 +379,16 @@ def preprocess_dataset():
             x, sr = librosa.load(filepath, sr=None, mono=True)
             
             # Resample if needed
-            if sr != TARGET_SR:
-                x = librosa.resample(x, orig_sr=sr, target_sr=TARGET_SR)
+            if sr != target_sr:
+                x = librosa.resample(x, orig_sr=sr, target_sr=target_sr)
             
-            # Apply bandpass filter
-            x = bandpass_filter(x)
+            # Apply bandpass filter (adjust cutoff based on sampling rate)
+            max_freq = target_sr / 2
+            highcut = min(400, max_freq - 1)  # Don't exceed Nyquist
+            x = bandpass_filter(x, target_sr, lowcut=25, highcut=highcut)
             
             # Slice into windows
-            windows, window_labels = slice_windows(x, label)
+            windows, window_labels = slice_windows(x, label, win_size, hop_size)
             
             if len(windows) == 0:
                 stats['skipped_files'] += 1
@@ -307,8 +403,8 @@ def preprocess_dataset():
             # Create unique identifier with directory prefix
             unique_id = f"{directory}_{base_name}"
             
-            windows_file = os.path.join(PROCESSED_DATA, f"{unique_id}_windows.npy")
-            labels_file = os.path.join(PROCESSED_DATA, f"{unique_id}_labels.npy")
+            windows_file = os.path.join(output_dir, f"{unique_id}_windows.npy")
+            labels_file = os.path.join(output_dir, f"{unique_id}_labels.npy")
             
             np.save(windows_file, windows)
             np.save(labels_file, window_labels)
@@ -339,6 +435,10 @@ def preprocess_dataset():
     print("=" * 60)
     
     summary_text = f"""
+    Sampling Rate: {target_sr} Hz
+    Window Size: {win_size} samples ({win_size/target_sr} seconds)
+    Hop Size: {hop_size} samples ({hop_size/target_sr} seconds)
+    
     Total files scanned: {stats['total_files']}
     Successfully processed: {stats['processed_files']}
     Skipped/failed: {stats['skipped_files']}
@@ -356,24 +456,25 @@ def preprocess_dataset():
     print(summary_text)
     
     # Save statistics
-    stats_file = os.path.join(PROCESSED_DATA, "preprocessing_stats.txt")
+    stats_file = os.path.join(output_dir, "preprocessing_stats.txt")
     with open(stats_file, 'w') as f:
         f.write("PhysioNet 2016 Preprocessing Statistics\n")
         f.write("=" * 50 + "\n")
         f.write(summary_text)
     
-    print(f"\nPreprocessed data saved to: {PROCESSED_DATA}")
+    print(f"\nPreprocessed data saved to: {output_dir}")
     print(f"Statistics saved to: {stats_file}")
     
     # Create combined dataset
-    create_combined_dataset()
+    create_combined_dataset(output_dir)
     
     return stats
 
 
-def create_combined_dataset():
+def create_combined_dataset(output_dir):
     """
     Create a combined dataset file with all windows and labels.
+    Now accepts output directory as parameter.
     """
     print("\nCreating combined dataset file...")
     
@@ -383,7 +484,7 @@ def create_combined_dataset():
     directory_mapping = []
     
     # Find all window files
-    window_files = [f for f in os.listdir(PROCESSED_DATA) 
+    window_files = [f for f in os.listdir(output_dir) 
                    if f.endswith('_windows.npy') and not f.startswith('combined')]
     
     if not window_files:
@@ -404,8 +505,8 @@ def create_combined_dataset():
             directory = 'unknown'
             base_name = unique_id
         
-        windows_path = os.path.join(PROCESSED_DATA, wf)
-        labels_path = os.path.join(PROCESSED_DATA, f"{unique_id}_labels.npy")
+        windows_path = os.path.join(output_dir, wf)
+        labels_path = os.path.join(output_dir, f"{unique_id}_labels.npy")
         
         if os.path.exists(windows_path) and os.path.exists(labels_path):
             windows = np.load(windows_path)
@@ -425,10 +526,10 @@ def create_combined_dataset():
         combined_labels = np.hstack(all_labels)
         
         # Save combined dataset
-        np.save(os.path.join(PROCESSED_DATA, "combined_windows.npy"), combined_windows)
-        np.save(os.path.join(PROCESSED_DATA, "combined_labels.npy"), combined_labels)
-        np.save(os.path.join(PROCESSED_DATA, "combined_file_mapping.npy"), np.array(file_mapping))
-        np.save(os.path.join(PROCESSED_DATA, "combined_directory_mapping.npy"), np.array(directory_mapping))
+        np.save(os.path.join(output_dir, "combined_windows.npy"), combined_windows)
+        np.save(os.path.join(output_dir, "combined_labels.npy"), combined_labels)
+        np.save(os.path.join(output_dir, "combined_file_mapping.npy"), np.array(file_mapping))
+        np.save(os.path.join(output_dir, "combined_directory_mapping.npy"), np.array(directory_mapping))
         
         print(f"\n✅ Combined dataset created:")
         print(f"   Windows shape: {combined_windows.shape}")
@@ -445,7 +546,7 @@ def create_combined_dataset():
         print(f"     Unknown: {np.sum(unknown_mask)} windows")
         
         # Save class distribution
-        class_dist_file = os.path.join(PROCESSED_DATA, "class_distribution.txt")
+        class_dist_file = os.path.join(output_dir, "class_distribution.txt")
         with open(class_dist_file, 'w') as f:
             f.write(f"Normal: {np.sum(normal_mask)}\n")
             f.write(f"Abnormal: {np.sum(abnormal_mask)}\n")
@@ -459,30 +560,76 @@ def create_combined_dataset():
 
 
 # ====================================================
-# 4. DATA LOADER FOR TRAINING
+# 4. DATA LOADER FOR TRAINING (MODIFIED)
 # ====================================================
-def load_preprocessed_data():
+def load_preprocessed_data(sampling_rate=None):
     """
     Load the preprocessed data for training.
-    Returns: (windows, labels, file_mapping)
+    If sampling_rate is None, shows menu to choose which dataset to load.
+    Returns: (windows, labels, file_mapping, metadata)
     """
-    windows_path = os.path.join(PROCESSED_DATA, "combined_windows.npy")
-    labels_path = os.path.join(PROCESSED_DATA, "combined_labels.npy")
-    mapping_path = os.path.join(PROCESSED_DATA, "combined_file_mapping.npy")
+    base_processed_dir = "../data/processed/"
+    
+    # If sampling rate not specified, show available datasets
+    if sampling_rate is None:
+        # List available processed datasets
+        available = []
+        for item in os.listdir(base_processed_dir):
+            if item.startswith('processed_') and os.path.isdir(os.path.join(base_processed_dir, item)):
+                available.append(item)
+        
+        if not available:
+            print("No preprocessed datasets found. Run preprocessing first.")
+            return None, None, None, None
+        
+        print("\n📂 Available preprocessed datasets:")
+        for i, dataset in enumerate(available):
+            # Extract sampling rate from folder name
+            sr = dataset.replace('processed_', '').replace('hz', '')
+            print(f"  {i+1}. {dataset} ({sr} Hz)")
+        
+        choice = input("\nSelect dataset (enter number): ").strip()
+        try:
+            idx = int(choice) - 1
+            folder_name = available[idx]
+        except:
+            print("Invalid choice. Using first dataset.")
+            folder_name = available[0]
+        
+        data_dir = os.path.join(base_processed_dir, folder_name)
+    else:
+        folder_name = f"processed_{sampling_rate}hz"
+        data_dir = os.path.join(base_processed_dir, folder_name)
+    
+    windows_path = os.path.join(data_dir, "combined_windows.npy")
+    labels_path = os.path.join(data_dir, "combined_labels.npy")
+    mapping_path = os.path.join(data_dir, "combined_file_mapping.npy")
+    dir_mapping_path = os.path.join(data_dir, "combined_directory_mapping.npy")
     
     if not os.path.exists(windows_path):
-        print("Preprocessed data not found. Run preprocessing first.")
-        return None, None, None
+        print(f"Preprocessed data not found at {data_dir}. Run preprocessing first.")
+        return None, None, None, None
     
     windows = np.load(windows_path)
     labels = np.load(labels_path)
     file_mapping = np.load(mapping_path) if os.path.exists(mapping_path) else None
+    dir_mapping = np.load(dir_mapping_path) if os.path.exists(dir_mapping_path) else None
     
-    print(f"✅ Loaded preprocessed data:")
-    print(f"   Windows: {windows.shape} (ready for TS2Vec: reshape to [-1, 2000, 1])")
+    # Extract sampling rate from folder name for info
+    sr = folder_name.replace('processed_', '').replace('hz', '')
+    
+    print(f"✅ Loaded preprocessed data from {folder_name}:")
+    print(f"   Sampling rate: {sr} Hz")
+    print(f"   Windows: {windows.shape}")
     print(f"   Labels: {labels.shape}")
     
-    return windows, labels, file_mapping
+    metadata = {
+        'sampling_rate': int(sr),
+        'folder_name': folder_name,
+        'data_dir': data_dir
+    }
+    
+    return windows, labels, file_mapping, metadata
 
 
 # ====================================================
@@ -539,45 +686,131 @@ def check_dataset_structure():
 
 
 # ====================================================
+# 6. UTILITY: LIST ALL PROCESSED DATASETS
+# ====================================================
+def list_processed_datasets():
+    """
+    List all available preprocessed datasets with their statistics.
+    """
+    base_processed_dir = "../data/processed/"
+    
+    if not os.path.exists(base_processed_dir):
+        print("No processed datasets found.")
+        return
+    
+    print("\n" + "="*60)
+    print("AVAILABLE PREPROCESSED DATASETS")
+    print("="*60)
+    
+    for item in os.listdir(base_processed_dir):
+        if item.startswith('processed_') and os.path.isdir(os.path.join(base_processed_dir, item)):
+            data_dir = os.path.join(base_processed_dir, item)
+            stats_file = os.path.join(data_dir, "preprocessing_stats.txt")
+            
+            # Extract sampling rate
+            sr = item.replace('processed_', '').replace('hz', '')
+            
+            # Try to load stats
+            if os.path.exists(stats_file):
+                with open(stats_file, 'r') as f:
+                    content = f.read()
+                    # Extract window count
+                    import re
+                    match = re.search(r'Total windows generated: (\d+)', content)
+                    windows_count = match.group(1) if match else "unknown"
+            else:
+                windows_count = "unknown"
+            
+            print(f"\n  📁 {item}")
+            print(f"     Sampling Rate: {sr} Hz")
+            print(f"     Windows: {windows_count}")
+            print(f"     Path: {data_dir}")
+
+
+# ====================================================
+# MAIN EXECUTION
+# ====================================================
+# ====================================================
 # MAIN EXECUTION
 # ====================================================
 if __name__ == "__main__":
+    # Check for auto-mode via environment variable
+    AUTO_MODE_SR = os.environ.get('TARGET_SR')
+    
+    if AUTO_MODE_SR is not None:
+        # AUTO-MODE: Run without interactive menus
+        print(f"\n🤖 Auto-mode: TARGET_SR={AUTO_MODE_SR} Hz")
+        target_sr = int(AUTO_MODE_SR)
+        win_size = target_sr * 2
+        hop_size = win_size // 2
+        folder_name = f"processed_{target_sr}hz"
+        base_processed_dir = "../data/processed/"
+        output_dir = os.path.join(base_processed_dir, folder_name)
+        
+        # Handle existing directory
+        if os.path.exists(output_dir):
+            version = 2
+            while True:
+                new_folder = f"{folder_name}_v{version}"
+                new_output_dir = os.path.join(base_processed_dir, new_folder)
+                if not os.path.exists(new_output_dir):
+                    output_dir = new_output_dir
+                    folder_name = new_folder
+                    break
+                version += 1
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Run preprocessing
+        stats = preprocess_dataset(output_dir, target_sr, win_size, hop_size, folder_name)
+        sys.exit(0)
+    
+    # INTERACTIVE MODE: Original code
     print("PhysioNet 2016 PCG Preprocessing Pipeline")
-    print("Using REFERENCE.csv files for labels")
+    print("Interactive Sampling Rate Selection")
     print("=" * 60)
     
-    # Check dataset structure
     check_dataset_structure()
     
-    # Run preprocessing
-    stats = preprocess_dataset()
+    print("\n" + "="*60)
+    print("MAIN MENU")
+    print("="*60)
+    print("\nWhat would you like to do?")
+    print("  1. Preprocess new dataset (choose sampling rate)")
+    print("  2. List existing preprocessed datasets")
+    print("  3. Load existing dataset and show example")
+    print("  4. Exit")
     
-    # Example of how to load the data
-    if stats and stats['processed_files'] > 0:
-        print("\n" + "=" * 60)
-        print("EXAMPLE: Loading data for TS2Vec training")
-        print("=" * 60)
+    action = input("\nEnter choice (1-4): ").strip()
+    
+    if action == '1':
+        target_sr, win_size, hop_size, folder_name = get_sampling_rate_choice()
+        base_processed_dir = "../data/processed/"
+        output_dir, folder_name = create_output_directory(base_processed_dir, folder_name)
         
-        windows, labels, mapping = load_preprocessed_data()
-        
+        if output_dir:
+            stats = preprocess_dataset(output_dir, target_sr, win_size, hop_size, folder_name)
+            
+            if stats and stats['processed_files'] > 0:
+                print("\n" + "=" * 60)
+                print("EXAMPLE: Loading the preprocessed data")
+                print("=" * 60)
+                windows, labels, mapping, metadata = load_preprocessed_data(target_sr)
+                
+                if windows is not None:
+                    print(f"\n✅ Successfully preprocessed {folder_name}")
+                    print(f"   Data shape: {windows.shape}")
+                    print(f"   Labels shape: {labels.shape}")
+                    print(f"   Ready for TS2Vec: reshape to [-1, {win_size}, 1]")
+    
+    elif action == '2':
+        list_processed_datasets()
+    
+    elif action == '3':
+        windows, labels, mapping, metadata = load_preprocessed_data()
         if windows is not None:
             print("\n📝 Example usage in your training script:")
-            print("""
-            from preprocess_pcg import load_preprocessed_data
-            
-            # Load data
-            X, y, _ = load_preprocessed_data()
-            
-            # Reshape for TS2Vec (samples, timesteps, channels)
-            X = X.reshape(-1, 2000, 1)  # 2000 samples per window
-            
-            # For supervised learning:
-            normal_mask = y == 0
-            abnormal_mask = y == 1
-            
-            X_normal = X[normal_mask]
-            X_abnormal = X[abnormal_mask]
-            
-            print(f"Normal samples: {len(X_normal)}")
-            print(f"Abnormal samples: {len(X_abnormal)}")
-            """)
+            print(""" ... """)
+    
+    else:
+        print("Exiting...")

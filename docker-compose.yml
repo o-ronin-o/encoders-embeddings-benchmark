@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  preprocess:
+    build: ./preprocessing_service
+    volumes:
+      - ./preprocessing_service/data:/app/../data
+    environment:
+      - TARGET_SR=${TARGET_SR:-1000}
+    stdin_open: true
+    tty: true

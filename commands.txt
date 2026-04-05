@@ -1,0 +1,17 @@
+
+
+
+# Default (1000 Hz)
+docker-compose run --rm preprocess
+
+# 2000 Hz
+TARGET_SR=2000 docker-compose run --rm preprocess
+
+# 4000 Hz
+TARGET_SR=4000 docker-compose run --rm preprocess
+
+# 8000 Hz
+TARGET_SR=8000 docker-compose run --rm preprocess
+
+# 16000 Hz
+TARGET_SR=16000 docker-compose run --rm preprocess
