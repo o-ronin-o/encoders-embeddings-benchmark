@@ -1,9 +1,0 @@
-PCG Embedding Generation Summary
-========================================
-Total embeddings: 68104
-Embedding dimension: 128
-
-Label distribution:
-  Unknown: 116 (0.2%)
-  Normal: 15967 (23.4%)
-  Abnormal: 52021 (76.4%)
