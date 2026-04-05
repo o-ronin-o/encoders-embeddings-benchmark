@@ -1,11 +1,119 @@
-version: '3.8'
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audio Embeddings Benchmark — docker-compose.yml
+#
+# Services:
+#   mlflow      : tracking server (long-running, port 5001)
+#   preprocess  : data windowing service (run-once job)
+#   wav2vec     : Wav2Vec 2.0 encoder (run-once job)
+#   hubert      : HuBERT encoder       (run-once job)
+#   wavlm       : WavLM encoder        (run-once job)
+#   ts2vec      : TS2Vec encoder       (run-once job)
+#
+# Quick start:
+#   docker-compose up -d mlflow          # start tracking server
+#   docker-compose run --rm preprocess   # preprocess at default SR=1000
+#   python run_pipeline.py --sampling_rate 16000 --encoders wav2vec hubert wavlm ts2vec
+#
+# Run individual encoder manually:
+#   SAMPLING_RATE=16000 docker-compose run --rm wav2vec
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-encoder-base: &encoder-base
+  build:
+    context: ./model_running_service
+    dockerfile: Dockerfile
+  volumes:
+    # Share the host data/ directory as /app/data inside every container.
+    # Preprocessed windows go in:  data/processed/processed_<SR>hz/
+    # Embeddings come out in:      data/embeddings/<encoder>/<SR>/
+    - ./preprocessing_service/data:/app/data
+    # Cache HuggingFace model weights across runs so they are not re-downloaded
+    - huggingface_cache:/app/.cache/huggingface
+  environment:
+    - MLFLOW_TRACKING_URI=http://mlflow:5001
+    # Override at runtime: SAMPLING_RATE=8000 docker-compose run --rm wav2vec
+    - SAMPLING_RATE=${SAMPLING_RATE:-16000}
+    - DATA_PATH=/app/data
+    - BATCH_SIZE=${BATCH_SIZE:-16}
+  depends_on:
+    mlflow:
+      condition: service_healthy
+  restart: "no"   # run-once job; orchestrator controls retries
+
 
 services:
-  preprocess:
-    build: ./preprocessing_service
+
+  # ── MLflow tracking server ─────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    ports:
+      - "5001:5001"
     volumes:
-      - ./preprocessing_service/data:/app/../data
+      - mlflow_data:/mlflow
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5001
+        --backend-store-uri /mlflow/mlruns
+        --default-artifact-root /mlflow/artifacts
+    healthcheck:
+      test: ["CMD", "mlflow", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Preprocessing service ─────────────────────────────────────────────────
+  preprocess:
+    build:
+      context: ./preprocessing_service
+    volumes:
+      - ./preprocessing_service/data:/data
     environment:
       - TARGET_SR=${TARGET_SR:-1000}
     stdin_open: true
     tty: true
+    restart: "no"
+
+  # ── Encoder: Wav2Vec 2.0 ──────────────────────────────────────────────────
+  wav2vec:
+    <<: *encoder-base
+    container_name: encoder_wav2vec
+    command: python run_wav2vec.py
+
+  # ── Encoder: HuBERT ──────────────────────────────────────────────────────
+  hubert:
+    <<: *encoder-base
+    container_name: encoder_hubert
+    command: python run_hubert.py
+
+  # ── Encoder: WavLM ────────────────────────────────────────────────────────
+  wavlm:
+    <<: *encoder-base
+    container_name: encoder_wavlm
+    command: python run_wavlm.py
+
+  # ── Encoder: TS2Vec ───────────────────────────────────────────────────────
+  ts2vec:
+    <<: *encoder-base
+    container_name: encoder_ts2vec
+    command: python run_ts2vec.py
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+      - SAMPLING_RATE=${SAMPLING_RATE:-16000}
+      - DATA_PATH=/app/data
+      - BATCH_SIZE=${BATCH_SIZE:-32}
+      # TS2Vec-specific hyper-params (optional overrides)
+      - TS2VEC_EPOCHS=${TS2VEC_EPOCHS:-10}
+      - TS2VEC_TRAIN_BATCH=${TS2VEC_TRAIN_BATCH:-8}
+      - TS2VEC_HIDDEN=${TS2VEC_HIDDEN:-320}
+
+
+volumes:
+  mlflow_data:
+    driver: local
+  huggingface_cache:
+    driver: local
